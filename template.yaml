@@ -1,0 +1,39 @@
+---
+#
+# This file contains Resource definitions for AWS Cloud Formation Service
+#
+
+CloudVpc0:
+  aws-type:    VPC
+  subnet:      10.1.0.0/16
+  description: IP address range for VPC Subnets
+
+VpcSubnet0:
+  aws-type:    Subnet
+  aws-az:      us-west-2a
+  subnet:      10.1.0.0/24
+  description: IP address range for Subnet 0 in VPC Network
+
+VpcSubnet64:
+  aws-type:    Subnet
+  aws-az:      us-west-2b
+  subnet:      10.1.64.0/24
+  description: IP address range for Subnet 64 in VPC Network
+
+VpcSubnet128:
+  aws-type:    Subnet
+  aws-az:      us-west-2c
+  subnet:      10.1.128.0/24
+  description: IP address range for Subnet 128 in VPC Network
+
+VpnEndpoint0:
+  aws-type:    CustomerGateway
+  ipaddr:      20.20.20.20
+  vpn-vpc:     10.1.0.0/16
+  bgp-asn:     "65000"
+  vpn-type:    ipsec.1
+  routing:     static
+  vpn-route:
+    1: 10.2.0.0/16
+    2: 10.3.0.0/16
+  description: Corporate VPN

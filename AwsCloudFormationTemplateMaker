@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+
+''' Author: Paul Greenberg @greenpau
+    File:   AwsCloudFormationTemplateMaker
+'''
+
+import os
+import sys
+if sys.version_info[0] < 3:
+    sys.stderr.write(os.path.basename(__file__) + ' requires Python 3 or higher.\n')
+    sys.stderr.write("python3 " + __file__ + ' -h\n')
+    sys.exit(1)
+
+import string
+import argparse
+import pprint
+import datetime
+import traceback
+import re
+import ipaddress
+import inspect
+import logging
+import struct
+import yaml
+import json
+
+tmpl = {}
+db = None
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(funcName)s() - %(levelname)s - %(message)s')
+logger = logging.getLogger(__file__)
+logger.setLevel(logging.CRITICAL)
+
+def _find_vpc(net):
+    ''' Find VPC by matching provided network to VPC resources in a stack '''
+    found = False
+    for oid in db:
+        if 'aws-type' not in db[oid]:
+            continue
+        if 'subnet' not in db[oid]:
+            continue
+        if db[oid]['aws-type'] != 'VPC':
+            continue
+        if ipaddress.ip_network(db[oid]['subnet']).overlaps(ipaddress.ip_network(net)):
+            return oid
+    if not found:
+        return None
+
+def _add_resource(oid, data):
+    ''' Add CloudFormation Resources: http://goo.gl/UQxaJ2 '''
+
+    allowed_aws_types = [
+        'VPC',
+        'Subnet',
+        'CustomerGateway',
+    ]
+
+    allowed_aws_params = {
+        'VPC': [
+            'aws-type',
+            'description',
+            'subnet',
+        ],
+        'Subnet': [
+            'aws-type',
+            'aws-az',
+            'description',
+            'subnet',
+        ],
+        'CustomerGateway': [
+            'aws-type',
+            'description',
+            'ipaddr',
+            'bgp-asn',
+            'vpn-type',
+            'vpn-vpc',
+            'dry-run',
+            'routing',
+            'vpn-route',
+        ],
+    }
+
+    allowed_aws_azs = [
+        'ap-northeast-1a', 'ap-northeast-1b', 'ap-northeast-1c'
+        'ap-southeast-1a', 'ap-southeast-1b',
+        'ap-southeast-2a', 'ap-southeast-2b',
+        'eu-central-1a', 'eu-central-1b', 'eu-central-1c',
+        'eu-west-1a', 'eu-west-1b', 'eu-west-1c',
+        'sa-east-1a', 'sa-east-1b',
+        'us-east-1a', 'us-east-1b', 'us-east-1c', 'us-east-1d', 'us-east-1e',
+        'us-west-1a', 'us-west-1b', 'us-west-1c',
+        'us-west-2a', 'us-west-2b', 'us-west-2c',
+    ]
+
+    try:
+        tmpl['Resources']
+    except KeyError:
+        tmpl['Resources'] = {}
+
+    if oid in tmpl['Resources']:
+        logger.error(id + ' resource already exists, exiting ...')
+        sys.exit(1)
+
+    if 'aws-type' not in data:
+        logger.error('AWS type is missing for resource ' + oid + ', exiting ...')
+        sys.exit(1)
+
+    if data['aws-type'] not in allowed_aws_types:
+        logger.error('AWS type ' + data['aws-type'] + ' is not allowed, exiting ...')
+        sys.exit(1)
+
+    for param in data:
+        if param not in allowed_aws_params[data['aws-type']]:
+            logger.error('AWS parameter ' + param + ' is either not allowed or invalid, \
+                         exiting ...')
+            sys.exit(1)
+
+    res = {}
+
+    if data['aws-type'] == 'VPC':
+        ''' AWS::EC2::VPC Reference: http://goo.gl/GWun0B '''
+        res['Type'] = 'AWS::EC2::VPC'
+        res['Properties'] = {}
+        res['Properties']['EnableDnsSupport'] = 'true'
+        res['Properties']['EnableDnsHostnames'] = 'true'
+        if 'subnet' in data:
+            res['Properties']['CidrBlock'] = data['subnet']
+        else:
+            logger.error('AWS resource ' + oid + ' is missing subnet parameter, exiting ...')
+            sys.exit(1)
+
+    elif data['aws-type'] == 'Subnet':
+        ''' AWS::EC2::Subnet Reference: http://goo.gl/i65Nwd '''
+        res['Type'] = 'AWS::EC2::Subnet'
+        res['Properties'] = {}
+        if 'aws-az' not in data:
+            logger.error('AWS resource ' + oid + ' is missing AvailabilityZone  parameter, \
+                          exiting ...')
+            sys.exit(1)
+        else:
+            if data['aws-az'] in allowed_aws_azs:
+                res['Properties']['AvailabilityZone'] = data['aws-az']
+            else:
+                logger.error('AvailabilityZone ' + data['aws-az'] + ' for AWS resource ' + \
+                              oid + ' is invalid, exiting ...')
+                sys.exit(1)
+        if 'subnet' in data:
+            res['Properties']['CidrBlock'] = data['subnet']
+        else:
+            logger.error('AWS resource ' + oid + ' is missing subnet parameter, exiting ...')
+            sys.exit(1)
+        res['Properties']['VpcId'] = {'Ref': _find_vpc(data['subnet'])}
+        if res['Properties']['VpcId'] is None:
+            logger.error('AWS resource ' + oid + ' has an address range located \
+                         outside the scope of any existing VPC in this stack, exiting ...')
+            sys.exit(1)
+
+    elif data['aws-type'] == 'CustomerGateway':
+        ''' AWS::EC2::CustomerGateway Reference: http://goo.gl/Qz16jr '''
+        res['Type'] = 'AWS::EC2::CustomerGateway'
+        res['Properties'] = {}
+        if 'ipaddr' not in data:
+            logger.error('AWS resource ' + oid + ' is missing "ipaddr" parameter, exiting ...')
+            sys.exit(1)
+        res['Properties']['IpAddress'] = data['ipaddr']
+        if 'bgp-asn' not in data:
+            logger.error('AWS resource ' + oid + ' is missing "bgp-asn" parameter, exiting ...')
+            sys.exit(1)
+        res['Properties']['BgpAsn'] = data['bgp-asn']
+        if 'vpn-type' not in data:
+            res['Properties']['Type'] = 'ipsec.1'
+        else:
+            res['Properties']['Type'] = data['vpn-type']
+        if 'dry-run' in data:
+            if data['dry-run'] is True:
+                res['Properties']['DryRun'] = 'true'
+
+        ''' AWS::EC2::VPNGateway Reference: http://goo.gl/ANPZ9K '''
+        vpn_gw_res = {}
+        vpn_gw_res['Type'] = 'AWS::EC2::VPNGateway'
+        vpn_gw_res['Properties'] = {}
+        if 'vpn-type' not in data:
+            vpn_gw_res['Properties']['Type'] = 'ipsec.1'
+        else:
+            vpn_gw_res['Properties']['Type'] = data['vpn-type']
+        vpn_gw_res['Properties']['Tags'] = []
+        vpn_gw_res['Properties']['Tags'].append({'Key': 'Application',
+                                                 'Value': {'Ref': 'AWS::StackName'}})
+        tmpl['Resources'][oid + 'VPNGateway'] = vpn_gw_res
+
+        ''' AWS::EC2::VPCGatewayAttachment Reference: http://goo.gl/XR7bc6 '''
+        vpn_gw_attach_res = {}
+        vpn_gw_attach_res['Type'] = 'AWS::EC2::VPCGatewayAttachment'
+        vpn_gw_attach_res['Properties'] = {}
+        vpn_gw_attach_res['Properties']['VpcId'] = {'Ref': _find_vpc(data['vpn-vpc'])}
+        vpn_gw_attach_res['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPNGateway'}
+        tmpl['Resources'][oid + 'VPNGatewayAttachment'] = vpn_gw_attach_res
+
+        ''' AWS::EC2::VPNConnection Reference: http://goo.gl/9AiPm9 '''
+        vpn_conn_res = {}
+        vpn_conn_res['Type'] = 'AWS::EC2::VPNConnection'
+        vpn_conn_res['Properties'] = {}
+        if 'vpn-type' not in data:
+            vpn_conn_res['Properties']['Type'] = 'ipsec.1'
+        else:
+            vpn_conn_res['Properties']['Type'] = data['vpn-type']
+        if 'routing' in data:
+            if data['routing'] == 'static':
+                vpn_conn_res['Properties']['StaticRoutesOnly'] = 'true'
+            elif data['routing'] == 'dynamic':
+                vpn_conn_res['Properties']['StaticRoutesOnly'] = 'false'
+            else:
+                logger.error('AWS resource ' + oid + ' has invalid "routing" parameter, \
+                              because only static and dynamic are supported, exiting ...')
+                sys.exit(1)
+        vpn_conn_res['Properties']['CustomerGatewayId'] = {'Ref': oid}
+        vpn_conn_res['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPNGateway'}
+        tmpl['Resources'][oid + 'VPNConnection'] = vpn_conn_res
+
+        ''' AWS::EC2::VPNConnectionRoute Reference: http://goo.gl/0lY7js '''
+        if 'vpn-route' in data:
+            for i in sorted(data['vpn-route']):
+                irt = 'VPNConnectionRoute' + str(i)
+                vars()[irt] = {}
+                vars()[irt]['Type'] = 'AWS::EC2::VPNConnectionRoute'
+                vars()[irt]['Properties'] = {}
+                vars()[irt]['Properties']['VpnConnectionId'] = {'Ref': oid + 'VPNConnection'}
+                vars()[irt]['Properties']['DestinationCidrBlock'] = data['vpn-route'][i]
+                tmpl['Resources'][oid + irt] = vars()[irt]
+    else:
+        pass
+
+    if not res:
+        logger.error('failed to create AWS resource for ' + oid)
+        return
+
+    if 'Tags' not in res['Properties']:
+        res['Properties']['Tags'] = []
+    res['Properties']['Tags'].append({'Key': 'Application', 'Value': {'Ref': 'AWS::StackName'}})
+    if 'description' in data:
+        res['Properties']['Tags'] = []
+        res['Properties']['Tags'].append({'Key': 'Description', 'Value': data['description']})
+
+    tmpl['Resources'][oid] = res
+    return
+
+def main():
+    """ Main function """
+    global db
+    descr = str(__file__) + ' - AWS Cloud Formation Template Maker\n\n'
+    epil = '\ngithub: https://github.com/greenpau/aws-cf-tmaker\n\n'
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, \
+                                     description=descr, epilog=epil)
+    main_group = parser.add_argument_group('arguments')
+    main_group.add_argument('--input-file', dest='ifile', metavar='INPUT-FILE', required=True, \
+                            type=argparse.FileType('r'), help='input file')
+    main_group.add_argument('--output-file', dest='ofile', metavar='OUTPUT-FILE',\
+                            type=str, help='output file')
+    parser.add_argument('-l', '--log-level', dest='ilog', metavar='LEVEL', type=int, default=0, \
+                        choices=range(1, 4), help='log level (default: 0, max: 3)')
+    args = parser.parse_args()
+
+    if args.ilog == 1:
+        logger.setLevel(logging.WARN)
+    elif args.ilog == 2:
+        logger.setLevel(logging.INFO)
+    elif args.ilog == 3:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.ERROR)
+
+    try:
+        db = yaml.load(args.ifile)
+    except Exception as e:
+        logger.error('failed to load YAML configuration data file because ' + str(e))
+        sys.exit(1)
+
+    tmpl['AWSTemplateFormatVersion'] = '2010-09-09'
+    tmpl['Description'] = 'This template creates a VPC'
+
+    for resource in sorted(db):
+        _add_resource(resource, db[resource])
+
+    if args.ofile is not None:
+        with open(args.ofile, 'w') as f:
+            f.write(json.dumps(tmpl, sort_keys=True, indent=4, separators=(',', ': ')))
+            f.write("\n")
+    else:
+        pprint.pprint(json.dumps(tmpl, sort_keys=True, indent=4, separators=(',', ': ')))
+
+if __name__ == '__main__':
+    main()
