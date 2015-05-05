@@ -4,48 +4,79 @@
 #
 
 CloudVpc0:
-  name:        CORE-VPC-NET
+  name:        CORE-VPC-NET1
   aws-type:    VPC
   subnet:      10.1.0.0/16
   vrf:         Main
   description: IP address range for VPC Subnets
 
-VpcSubnet0:
-  name:        CORE-SUBNET-1
+CloudVpc1:
+  name:        CORE-VPC-NET2
+  aws-type:    VPC
+  subnet:      10.2.0.0/16
+  vrf:         Main
+  description: IP address range for VPC Subnets
+
+Vpc0Subnet0:
+  name:        CORE1-SUBNET-1
   aws-type:    Subnet
   aws-az:      us-west-2a
   subnet:      10.1.0.0/24
   vrf:         Main
-  description: IP address range for Subnet 0 in VPC Network
+  description: IP address range for Subnet 0 in VPC1 Network
 
-VpcSubnet64:
-  name:        CORE-SUBNET-2
+Vpc0Subnet64:
+  name:        CORE1-SUBNET-2
   aws-type:    Subnet
   aws-az:      us-west-2b
   subnet:      10.1.64.0/24
   vrf:         Main
-  description: IP address range for Subnet 64 in VPC Network
+  description: IP address range for Subnet 64 in VPC1 Network
 
-VpcSubnet128:
-  name:        CORE-SUBNET-3
+Vpc0Subnet128:
+  name:        CORE1-SUBNET-3
   aws-type:    Subnet
   aws-az:      us-west-2c
   subnet:      10.1.128.0/24
   vrf:         Main
-  description: IP address range for Subnet 128 in VPC Network
+  description: IP address range for Subnet 128 in VPC1 Network
 
-VpnEndpoint0:
-  name:        CORP-VPN
-  aws-type:    CustomerGateway
-  ipaddr:      20.20.20.20
-  vpc:         10.1.0.0/16
-  bgp-asn:     "65000"
-  vpn-type:    ipsec.1
-  routing:     static
-  vpn-routes:
-    1: 10.2.0.0/16
-    2: 10.3.0.0/16
-  description: Corporate VPN
+Vpc1Subnet0:
+  name:        CORE2-SUBNET-1
+  aws-type:    Subnet
+  aws-az:      us-west-2a
+  subnet:      10.2.0.0/24
+  vrf:         Main
+  description: IP address range for Subnet 0 in VPC1 Network
+
+Vpc1Subnet64:
+  name:        CORE2-SUBNET-2
+  aws-type:    Subnet
+  aws-az:      us-west-2b
+  subnet:      10.2.64.0/24
+  vrf:         Main
+  description: IP address range for Subnet 64 in VPC1 Network
+
+Vpc1Subnet128:
+  name:        CORE2-SUBNET-3
+  aws-type:    Subnet
+  aws-az:      us-west-2c
+  subnet:      10.2.128.0/24
+  vrf:         Main
+  description: IP address range for Subnet 128 in VPC1 Network
+
+#VpnEndpoint0:
+#  name:        CORP-VPN
+#  aws-type:    CustomerGateway
+#  ipaddr:      20.20.20.20
+#  vpc:         10.1.0.0/16
+#  bgp-asn:     "65000"
+#  vpn-type:    ipsec.1
+#  routing:     static
+#  vpn-routes:
+#    1: 172.16.1.0/24
+#    2: 172.16.2.0/24
+#  description: Corporate VPN
 
 InternetGateway0:
   name:        AWS-GATEWAY
