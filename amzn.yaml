@@ -1,0 +1,155 @@
+---
+#
+# This file contains Resource definitions for AWS Cloud Formation Service
+#
+
+CloudVpc0:
+  name:        CORE-VPC-NET1
+  aws-region:  us-west-2
+  aws-type:    VPC
+  subnet:      10.1.0.0/16
+  vrf:         Main
+  secgroup:    DefaultGroup0
+  description: IP address range for VPC Subnets
+
+CloudVpc1:
+  name:        CORE-VPC-NET2
+  aws-region:  us-west-2
+  aws-type:    VPC
+  subnet:      10.2.0.0/16
+  vrf:         Main
+  secgroup:    DefaultGroup1
+  description: IP address range for VPC Subnets
+
+Vpc0Subnet0:
+  name:        CORE1-SUBNET-1
+  aws-type:    Subnet
+  aws-az:      a
+  subnet:      10.1.0.0/24
+  vrf:         Main
+  acl:         NetworkAcl0
+  description: IP address range for Subnet 0 in VPC1 Network
+
+Vpc0Subnet64:
+  name:        CORE1-SUBNET-2
+  aws-type:    Subnet
+  aws-az:      b
+  subnet:      10.1.64.0/24
+  vrf:         Main
+  acl:         NetworkAcl0
+  description: IP address range for Subnet 64 in VPC1 Network
+
+Vpc0Subnet128:
+  name:        CORE1-SUBNET-3
+  aws-type:    Subnet
+  aws-az:      c
+  subnet:      10.1.128.0/24
+  vrf:         Main
+  acl:         NetworkAcl0
+  description: IP address range for Subnet 128 in VPC1 Network
+
+Vpc1Subnet0:
+  name:        CORE2-SUBNET-1
+  aws-type:    Subnet
+  aws-az:      a
+  subnet:      10.2.0.0/24
+  vrf:         Main
+  acl:         NetworkAcl1
+  description: IP address range for Subnet 0 in VPC1 Network
+
+Vpc1Subnet64:
+  name:        CORE2-SUBNET-2
+  aws-type:    Subnet
+  aws-az:      b
+  subnet:      10.2.64.0/24
+  vrf:         Main
+  acl:         NetworkAcl1
+  description: IP address range for Subnet 64 in VPC1 Network
+
+Vpc1Subnet128:
+  name:        CORE2-SUBNET-3
+  aws-type:    Subnet
+  aws-az:      c
+  subnet:      10.2.128.0/24
+  vrf:         Main
+  acl:         NetworkAcl1
+  description: IP address range for Subnet 128 in VPC1 Network
+
+VpnTunnel0:
+  name:        CORP-VPN
+  aws-type:    CustomerGateway
+  ipaddr:      72.69.116.47
+  vpc:         10.1.0.0/16
+  bgp-enabled: false
+  bgp-asn:     "65000"
+  vpn-type:    ipsec.1
+  routes:
+    1: 172.16.1.0/24
+    2: 172.16.2.0/24
+  description: Corporate VPN Tunnel for VPC0 Network
+
+InternetGateway0:
+  name:        AWS-GATEWAY0
+  aws-type:    InternetGateway
+  vrf:         Main
+  vpc:         10.1.0.0/16
+  routes:
+    1: 0.0.0.0/0
+  description: Amazon Internet Gateway for VPC0 Network
+
+InternetGateway1:
+  name:        AWS-GATEWAY1
+  aws-type:    InternetGateway
+  vrf:         Main
+  vpc:         10.2.0.0/16
+  routes:
+    1: 0.0.0.0/0
+  description: Amazon Internet Gateway for VPC1 Network
+
+DefaultGroup0:
+  name:        SGACL0
+  aws-type:    SecurityGroup
+  rules:
+    inbound:
+      10:  allow ip any from 0.0.0.0/0
+    outbound:
+      10:  allow any
+  description: default Security Group for VPC0
+
+DefaultGroup1:
+  name:        SGACL1
+  aws-type:    SecurityGroup
+  rules:
+    inbound:
+      10:  allow ip any from 0.0.0.0/0
+    outbound:
+      10:  allow any
+  description: default Security Group for VPC1
+
+NetworkAcl0:
+  name:        NACL0
+  aws-type:    NetworkAcl
+  rules:
+    inbound:
+      10:  allow tcp 1024-6500 from 0.0.0.0/0
+      20:  allow tcp any from 0.0.0.0/0
+      30:  allow udp any from 0.0.0.0/0
+      40:  allow icmp any from 0.0.0.0/0
+      50:  deny any
+    outbound:
+      10:  allow any
+  description: default Network ACL for VPC0
+
+NetworkAcl1:
+  name:        NACL1
+  aws-type:    NetworkAcl
+  rules:
+    inbound:
+      10:  allow udp 1024-6500 from 0.0.0.0/0
+      20:  allow tcp any from 0.0.0.0/0
+      30:  allow udp any from 0.0.0.0/0
+      40:  allow icmp any from 0.0.0.0/0
+      50:  deny any
+    outbound:
+      10:  allow any
+  description: default Network ACL for VPC1

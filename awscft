@@ -1,27 +1,20 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 ''' Author: Paul Greenberg @greenpau
-    File:   AwsCloudFormationTemplateMaker
+    File:   awscft
+    Tool:   AWS Cloud Formation Tool
 '''
 
 import os
 import sys
-if sys.version_info[0] < 3:
-    sys.stderr.write(os.path.basename(__file__) + ' requires Python 3 or higher.\n')
-    sys.stderr.write("python3 " + __file__ + ' -h\n')
-    sys.exit(1)
-
 import string
-import argparse
 import pprint
 import datetime
 import traceback
 import re
-import ipaddress
 import inspect
 import logging
 import struct
-import yaml
 import json
 
 tmpl = {}
@@ -30,6 +23,71 @@ db = None
 logging.basicConfig(format='%(asctime)s - %(name)s - %(funcName)s() - %(levelname)s - %(message)s')
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.CRITICAL)
+
+aws_ec2_types = [
+    "c1.medium", "c1.xlarge", "c3.2xlarge", "c3.4xlarge", "c3.8xlarge", "c3.large", "c3.xlarge",
+    "c4.2xlarge", "c4.4xlarge", "c4.8xlarge", "c4.large", "c4.xlarge", "cc2.8xlarge",
+    "cr1.8xlarge", "d2.2xlarge", "d2.4xlarge", "d2.8xlarge", "d2.xlarge", "g2.2xlarge",
+    "g2.8xlarge", "hi1.4xlarge", "i2.2xlarge", "i2.4xlarge", "i2.8xlarge", "i2.xlarge",
+    "m1.large", "m1.medium", "m1.small", "m1.xlarge", "m2.2xlarge", "m2.4xlarge", "m2.xlarge",
+    "m3.2xlarge", "m3.large", "m3.medium", "m3.xlarge", "r3.2xlarge", "r3.4xlarge", "r3.8xlarge",
+    "r3.large", "r3.xlarge", "t1.micro", "t2.medium", "t2.micro", "t2.small",
+]
+
+def _find_vpc_rts(vpc_id, add_reference=False):
+    ''' Find route tables associated with a particular VPC '''
+
+    rts = []
+    for res in tmpl['Resources']:
+        if 'Type' not in tmpl['Resources'][res]:
+            continue
+        if 'Properties' not in tmpl['Resources'][res]:
+            continue
+        if tmpl['Resources'][res]['Type'] != 'AWS::EC2::RouteTable':
+            continue
+        if 'VpcId' not in tmpl['Resources'][res]['Properties']:
+            continue
+        if 'Ref' not in tmpl['Resources'][res]['Properties']['VpcId']:
+            continue
+        if tmpl['Resources'][res]['Properties']['VpcId']['Ref'] != vpc_id:
+            continue
+        if add_reference:
+            rts.append({'Ref': res})
+        else:
+            rts.append(res)
+    return rts
+
+def _find_vpc_region(res):
+    ''' Find VPC Region by matching Region tag '''
+    if res not in tmpl['Resources']:
+        return None
+    if 'Type' not in tmpl['Resources'][res]:
+        return None
+    if 'Properties' not in tmpl['Resources'][res]:
+        return None
+    if 'Tags' not in tmpl['Resources'][res]['Properties']:
+        return None
+    for tag in tmpl['Resources'][res]['Properties']['Tags']:
+        if 'Key' not in tag:
+            continue
+        if 'Value' not in tag:
+            continue
+        if tag['Key'] == 'Region':
+            return tag['Value']
+    return None
+
+def _find_depends_on():
+    ''' Adds Resource as a dependency for VPN '''
+    oids = []
+    vpn_ids = ['AWS::EC2::CustomerGateway',
+               'AWS::EC2::VPNGateway',
+               'AWS::EC2::VPCGatewayAttachment',
+               'AWS::EC2::VPNConnection',
+               'AWS::EC2::VPNConnectionRoute']
+    for res in tmpl['Resources']:
+        if tmpl['Resources'][res]['Type'] not in vpn_ids:
+            oids.append(res)
+    return oids
 
 def _find_rt_id(vrf, vpc):
     ''' Find VRF id by matching provided VRF name to VPC resources in a stack '''
@@ -57,13 +115,14 @@ def _find_rt_id(vrf, vpc):
                 return res
     return None
 
-def _add_vrf(vrf, net_id, net, vpc):
+def _add_vrf(vrf, net, vpc):
+    ''' Associate a Subnet with a VRF '''
     rt_oid = None
     for res in tmpl['Resources']:
         if 'Type' not in tmpl['Resources'][res]:
             continue
         if 'Properties' not in tmpl['Resources'][res]:
-       	    continue
+            continue
         if 'Tags' not in tmpl['Resources'][res]['Properties']:
             continue
         if tmpl['Resources'][res]['Type'] != 'AWS::EC2::RouteTable':
@@ -84,29 +143,38 @@ def _add_vrf(vrf, net_id, net, vpc):
                 break
     if rt_oid is None:
         ''' AWS::EC2::RouteTable Reference: http://goo.gl/ycRvsS '''
-        for i in range (0, 1000000):
-            if 'RouteTable' + str(i) not in tmpl['Resources']:
-                rt_oid = 'RouteTable' + str(i)
+        j = None
+        for i in range(0, 1000000):
+            if vpc + 'RouteTable' + str(i) not in tmpl['Resources']:
+                rt_oid = vpc + 'RouteTable' + str(i)
+                j = str(i)
                 break
         res = {}
         res['Type'] = 'AWS::EC2::RouteTable'
+        res['DependsOn'] = [vpc, net]
         res['Properties'] = {}
         res['Properties']['VpcId'] = {'Ref': vpc}
         res['Properties']['Tags'] = []
         res['Properties']['Tags'].append({'Key': 'VRF', 'Value': vrf})
         res['Properties']['Tags'].append({'Key': 'Application', 'Value': {'Ref': 'AWS::StackName'}})
+        res['Properties']['Tags'].append({'Key': 'Name', 'Value': str(vpc + '-RT' + j).upper()})
         tmpl['Resources'][rt_oid] = res
+    else:
+        if net not in tmpl['Resources'][rt_oid]['DependsOn']:
+            tmpl['Resources'][rt_oid]['DependsOn'].append(net)
+
     if rt_oid is not None:
         ''' AWS::EC2::SubnetRouteTableAssociation Reference: http://goo.gl/HmiDXU '''
         rta_oid = None
-        for i in range (0, 1000000):
+        for i in range(0, 1000000):
             if rt_oid + 'Association' + str(i) not in tmpl['Resources']:
                 rta_oid = rt_oid + 'Association' + str(i)
                 break
         res = {}
         res['Type'] = 'AWS::EC2::SubnetRouteTableAssociation'
+        res['DependsOn'] = [net, rt_oid]
         res['Properties'] = {}
-        res['Properties']['SubnetId'] = {'Ref': net_id}
+        res['Properties']['SubnetId'] = {'Ref': net}
         res['Properties']['RouteTableId'] = {'Ref': rt_oid}
         tmpl['Resources'][rta_oid] = res
     return
@@ -129,20 +197,31 @@ def _find_vpc_id(net):
 def _add_resource(oid, data):
     ''' Add CloudFormation Resources: http://goo.gl/UQxaJ2 '''
 
+    allowed_aws_acl_prots = {
+        'all': '-1',
+        'tcp': '6',
+        'udp': '17',
+        'icmp': '1',
+    }
+
     allowed_aws_types = [
         'VPC',
         'Subnet',
         'CustomerGateway',
         'InternetGateway',
+        'NetworkAcl',
+        'SecurityGroup',
     ]
 
     allowed_aws_params = {
         'VPC': [
             'aws-type',
+            'aws-region',
             'name',
             'vrf',
             'description',
             'subnet',
+            'secgroup',
         ],
         'Subnet': [
             'aws-type',
@@ -151,18 +230,18 @@ def _add_resource(oid, data):
             'vrf',
             'description',
             'subnet',
+            'acl',
         ],
         'CustomerGateway': [
             'name',
             'aws-type',
             'description',
             'ipaddr',
+            'bgp-enabled',
             'bgp-asn',
             'vpn-type',
             'vpc',
-            'dry-run',
-            'routing',
-            'vpn-routes',
+            'routes',
         ],
         'InternetGateway': [
             'aws-type',
@@ -171,6 +250,18 @@ def _add_resource(oid, data):
             'vrf',
             'vpc',
             'routes',
+        ],
+        'NetworkAcl': [
+            'aws-type',
+            'description',
+            'name',
+            'rules',
+        ],
+        'SecurityGroup': [
+            'aws-type',
+            'description',
+            'name',
+            'rules',
         ],
     }
 
@@ -204,9 +295,13 @@ def _add_resource(oid, data):
         sys.exit(1)
 
     for param in data:
+        if data['aws-type'] not in allowed_aws_params:
+            logger.error('AWS type ' + data['aws-type'] + ' for ' + oid + ' is ' + \
+                         'not supported, exiting ...')
+            sys.exit(1)
         if param not in allowed_aws_params[data['aws-type']]:
-            logger.error('AWS parameter ' + param + ' for ' + oid + ' is either not allowed \
-                          or invalid, exiting ...')
+            logger.error('AWS parameter ' + param + ' for ' + oid + ' is either not allowed ' + \
+                          'or invalid, exiting ...')
             sys.exit(1)
 
     res = {}
@@ -222,47 +317,97 @@ def _add_resource(oid, data):
         else:
             logger.error('AWS resource ' + oid + ' is missing subnet parameter, exiting ...')
             sys.exit(1)
+        if 'aws-region' in data:
+            res['Properties']['Tags'] = []
+            res['Properties']['Tags'].append({'Key': 'Region', 'Value': data['aws-region']})
+        else:
+            logger.error('AWS resource ' + oid + ' is missing aws-region parameter, exiting ...')
+            sys.exit(1)
 
     elif data['aws-type'] == 'Subnet':
         ''' AWS::EC2::Subnet Reference: http://goo.gl/i65Nwd '''
+        vpc_id = _find_vpc_id(data['subnet'])
+        if vpc_id is None:
+            return None
+        vpc_region = _find_vpc_region(vpc_id)
+        if vpc_region is None:
+            return None
+
         res['Type'] = 'AWS::EC2::Subnet'
+        res['DependsOn'] = [vpc_id]
         res['Properties'] = {}
         if 'aws-az' not in data:
             logger.error('AWS resource ' + oid + ' is missing AvailabilityZone  parameter, \
                           exiting ...')
             sys.exit(1)
         else:
-            if data['aws-az'] in allowed_aws_azs:
-                res['Properties']['AvailabilityZone'] = data['aws-az']
+            if vpc_region + data['aws-az'] in allowed_aws_azs:
+                res['Properties']['AvailabilityZone'] = vpc_region + data['aws-az']
             else:
-                logger.error('AvailabilityZone ' + data['aws-az'] + ' for AWS resource ' + \
-                              oid + ' is invalid, exiting ...')
+                logger.error('AvailabilityZone ' + vpc_region + data['aws-az'] + \
+                             ' for AWS resource ' + oid + ' is invalid, exiting ...')
                 sys.exit(1)
         if 'subnet' in data:
             res['Properties']['CidrBlock'] = data['subnet']
         else:
             logger.error('AWS resource ' + oid + ' is missing subnet parameter, exiting ...')
             sys.exit(1)
-        res['Properties']['VpcId'] = {'Ref': _find_vpc_id(data['subnet'])}
-        if res['Properties']['VpcId'] is None:
-            logger.error('AWS resource ' + oid + ' has an address range located \
-                         outside the scope of any existing VPC in this stack, exiting ...')
-            sys.exit(1)
+        res['Properties']['VpcId'] = {'Ref': vpc_id}
         if 'vrf' in data:
             vrf_name = data['vrf']
-            _add_vrf(vrf_name, oid, data['subnet'], _find_vpc_id(data['subnet']))
+            _add_vrf(vrf_name, oid, vpc_id)
 
     elif data['aws-type'] == 'CustomerGateway':
+        if 'ipaddr' not in data:
+            logger.error('AWS resource ' + oid + ' is missing ipaddr parameter, exiting ...')
+            sys.exit(1)
+        if 'bgp-enabled' not in data:
+            logger.error('AWS resource ' + oid + ' is missing bgp-enabled parameter, exiting ...')
+            sys.exit(1)
+        if 'bgp-asn' not in data:
+            logger.error('AWS resource ' + oid + ' is missing bgp-asn parameter, exiting ...')
+            sys.exit(1)
+        if 'vpc' not in data:
+            logger.error('AWS resource ' + oid + ' is missing vpc parameter, exiting ...')
+            sys.exit(1)
+        if _find_vpc_id(data['vpc']) is None:
+            logger.error('AWS resource ' + oid + ' contains reference to invalid vpc, exiting ...')
+            sys.exit(1)
+
+        ''' AWS::EC2::VPNGateway Reference: http://goo.gl/ANPZ9K '''
+        gres = {}
+        gres['Type'] = 'AWS::EC2::VPNGateway'
+        gres['DependsOn'] = _find_depends_on()
+        gres['Properties'] = {}
+        if 'vpn-type' not in data:
+            gres['Properties']['Type'] = 'ipsec.1'
+        else:
+            gres['Properties']['Type'] = data['vpn-type']
+        gres['Properties']['Tags'] = []
+        gres['Properties']['Tags'].append({'Key':'Application', 'Value':{'Ref': 'AWS::StackName'}})
+        if 'description' in data:
+            gres['Properties']['Tags'].append({'Key': 'Description', 'Value': data['description']})
+        if 'name' in data:
+            gres['Properties']['Tags'].append({'Key': 'Name', 'Value': data['name']})
+        tmpl['Resources'][oid + 'VPGateway'] = gres
+        del gres
+
+        ''' AWS::EC2::VPCGatewayAttachment Reference: http://goo.gl/XR7bc6 '''
+        vpc_id = _find_vpc_id(data['vpc'])
+        gres = {}
+        gres['Type'] = 'AWS::EC2::VPCGatewayAttachment'
+        gres['DependsOn'] = [oid + 'VPGateway', vpc_id]
+        gres['Properties'] = {}
+        gres['Properties']['VpcId'] = {'Ref': vpc_id}
+        gres['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPGateway'}
+        tmpl['Resources'][oid + 'VPGatewayAttachment'] = gres
+        del gres
+
         ''' AWS::EC2::CustomerGateway Reference: http://goo.gl/Qz16jr '''
         res['Type'] = 'AWS::EC2::CustomerGateway'
+        res['DependsOn'] = [oid + 'VPGatewayAttachment']
         res['Properties'] = {}
-        if 'ipaddr' not in data:
-            logger.error('AWS resource ' + oid + ' is missing "ipaddr" parameter, exiting ...')
-            sys.exit(1)
         res['Properties']['IpAddress'] = data['ipaddr']
-        if 'bgp-asn' not in data:
-            logger.error('AWS resource ' + oid + ' is missing "bgp-asn" parameter, exiting ...')
-            sys.exit(1)
         res['Properties']['BgpAsn'] = data['bgp-asn']
         if 'vpn-type' not in data:
             res['Properties']['Type'] = 'ipsec.1'
@@ -272,66 +417,70 @@ def _add_resource(oid, data):
             if data['dry-run'] is True:
                 res['Properties']['DryRun'] = 'true'
 
-        ''' AWS::EC2::VPNGateway Reference: http://goo.gl/ANPZ9K '''
-        vpn_gw_res = {}
-        vpn_gw_res['Type'] = 'AWS::EC2::VPNGateway'
-        vpn_gw_res['Properties'] = {}
-        if 'vpn-type' not in data:
-            vpn_gw_res['Properties']['Type'] = 'ipsec.1'
-        else:
-            vpn_gw_res['Properties']['Type'] = data['vpn-type']
-        vpn_gw_res['Properties']['Tags'] = []
-        vpn_gw_res['Properties']['Tags'].append({'Key': 'Application',
-                                                 'Value': {'Ref': 'AWS::StackName'}})
-        tmpl['Resources'][oid + 'VPNGateway'] = vpn_gw_res
-
-        ''' AWS::EC2::VPCGatewayAttachment Reference: http://goo.gl/XR7bc6 '''
-        vpn_gw_attach_res = {}
-        vpn_gw_attach_res['Type'] = 'AWS::EC2::VPCGatewayAttachment'
-        vpn_gw_attach_res['Properties'] = {}
-        vpn_gw_attach_res['Properties']['VpcId'] = {'Ref': _find_vpc_id(data['vpc'])}
-        vpn_gw_attach_res['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPNGateway'}
-        tmpl['Resources'][oid + 'VPNGatewayAttachment'] = vpn_gw_attach_res
-
         ''' AWS::EC2::VPNConnection Reference: http://goo.gl/9AiPm9 '''
-        vpn_conn_res = {}
-        vpn_conn_res['Type'] = 'AWS::EC2::VPNConnection'
-        vpn_conn_res['Properties'] = {}
+        gres = {}
+        gres['Type'] = 'AWS::EC2::VPNConnection'
+        gres['Properties'] = {}
         if 'vpn-type' not in data:
-            vpn_conn_res['Properties']['Type'] = 'ipsec.1'
+            gres['Properties']['Type'] = 'ipsec.1'
         else:
-            vpn_conn_res['Properties']['Type'] = data['vpn-type']
-        if 'routing' in data:
-            if data['routing'] == 'static':
-                vpn_conn_res['Properties']['StaticRoutesOnly'] = 'true'
-            elif data['routing'] == 'dynamic':
-                vpn_conn_res['Properties']['StaticRoutesOnly'] = 'false'
+            gres['Properties']['Type'] = data['vpn-type']
+        if 'bgp-enabled' in data:
+            if data['bgp-enabled'] is True:
+                gres['Properties']['StaticRoutesOnly'] = 'false'
+            elif data['bgp-enabled'] is False:
+                gres['Properties']['StaticRoutesOnly'] = 'true'
             else:
-                logger.error('AWS resource ' + oid + ' has invalid "routing" parameter, \
-                              because only static and dynamic are supported, exiting ...')
+                logger.error('AWS resource ' + oid + ' has an invalid bgp-enabled parameter ' + \
+                str(data['bgp-enabled']) + ' ,because only yes and no are supported, exiting ...')
                 sys.exit(1)
-        vpn_conn_res['Properties']['CustomerGatewayId'] = {'Ref': oid}
-        vpn_conn_res['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPNGateway'}
-        tmpl['Resources'][oid + 'VPNConnection'] = vpn_conn_res
+        gres['Properties']['CustomerGatewayId'] = {'Ref': oid}
+        gres['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPGateway'}
+        gres['DependsOn'] = [oid, oid + 'VPGateway', oid + 'VPGatewayAttachment']
+        if 'Tags' not in gres['Properties']:
+            gres['Properties']['Tags'] = []
+        if 'description' in data:
+            gres['Properties']['Tags'].append({'Key': 'Description', 'Value': data['description']})
+        if 'name' in data:
+            gres['Properties']['Tags'].append({'Key': 'Name', 'Value': data['name']})
+        tmpl['Resources'][oid + 'VPNConnection'] = gres
+        del gres
 
         ''' AWS::EC2::VPNConnectionRoute Reference: http://goo.gl/0lY7js '''
-        if 'vpn-routes' in data:
-            for i in sorted(data['vpn-routes']):
+        vpn_routes = []
+        if 'routes' in data:
+            for i in sorted(data['routes']):
                 irt = 'VPNConnectionRoute' + str(i)
                 vars()[irt] = {}
                 vars()[irt]['Type'] = 'AWS::EC2::VPNConnectionRoute'
                 vars()[irt]['Properties'] = {}
                 vars()[irt]['Properties']['VpnConnectionId'] = {'Ref': oid + 'VPNConnection'}
-                vars()[irt]['Properties']['DestinationCidrBlock'] = data['vpn-routes'][i]
+                vars()[irt]['Properties']['DestinationCidrBlock'] = data['routes'][i]
+                vars()[irt]['DependsOn'] = [oid + 'VPNConnection']
                 tmpl['Resources'][oid + irt] = vars()[irt]
+                vpn_routes.append(oid + irt)
+
+            ''' AWS::EC2::VPNGatewayRoutePropagation Reference: http://goo.gl/2FljYB '''
+            gres = {}
+            gres['Type'] = 'AWS::EC2::VPNGatewayRoutePropagation'
+            gres['Properties'] = {}
+            gres['Properties']['VpnGatewayId'] = {'Ref': oid + 'VPGateway'}
+            gres['Properties']['RouteTableIds'] = _find_vpc_rts(vpc_id, True)
+            gres['DependsOn'] = _find_vpc_rts(vpc_id)
+            gres['DependsOn'].append(oid)
+            gres['DependsOn'].append(oid + 'VPNConnection')
+            for rt in vpn_routes:
+                gres['DependsOn'].append(rt)
+            tmpl['Resources'][oid + 'RoutePropagation'] = gres
+            del gres
 
     elif data['aws-type'] == 'InternetGateway':
-        
+
         if 'vpc' not in data:
             logger.error('template parameter vpc for ' + oid + ' is missing, exiting ...')
         if 'vrf' not in data:
             logger.error('template parameter vrf for ' + oid + ' is missing, exiting ...')
-        
+
         vpc_id = _find_vpc_id(data['vpc'])
         if vpc_id is None:
             return None
@@ -339,46 +488,144 @@ def _add_resource(oid, data):
         if rt_id is None:
             return None
 
-        #print(vpc_id)
-        #print(rt_id)
-
         ''' AWS::EC2::InternetGateway Reference: http://goo.gl/2Jcc8b '''
         res['Type'] = 'AWS::EC2::InternetGateway'
         res['Properties'] = {}
-        
+        res['DependsOn'] = [vpc_id]
+
         ''' AWS::EC2::VPCGatewayAttachment Reference: http://goo.gl/XR7bc6 '''
         gw_id = None
-        for i in range (0, 1000000):
+        for i in range(0, 1000000):
             if oid + 'VPCGatewayAttachment' + str(i) not in tmpl['Resources']:
                 gw_id = oid + 'VPCGatewayAttachment' + str(i)
                 break
         gw = {}
         gw['Type'] = 'AWS::EC2::VPCGatewayAttachment'
         gw['Properties'] = {}
+        gw['DependsOn'] = [oid]
         gw['Properties']['VpcId'] = {'Ref': vpc_id}
         gw['Properties']['InternetGatewayId'] = {'Ref': oid}
         tmpl['Resources'][gw_id] = gw
-        
+
         ''' AWS::EC2::Route Reference: http://goo.gl/0lY7js '''
         if 'routes' in data:
             for i in sorted(data['routes']):
                 irt = None
-                for j in range (0, 1000000):
+                for j in range(0, 1000000):
                     if oid + 'Route' + str(j) not in tmpl['Resources']:
                         irt = oid + 'Route' + str(j)
                         break
                 vars()[irt] = {}
                 vars()[irt]['Type'] = 'AWS::EC2::Route'
                 vars()[irt]['Properties'] = {}
+                vars()[irt]['DependsOn'] = [oid, rt_id]
                 vars()[irt]['Properties']['RouteTableId'] = {'Ref': rt_id}
                 vars()[irt]['Properties']['DestinationCidrBlock'] = data['routes'][i]
                 vars()[irt]['Properties']['GatewayId'] = {'Ref': oid}
                 tmpl['Resources'][irt] = vars()[irt]
+
+    elif data['aws-type'] in ['NetworkAcl', 'SecurityGroup']:
+        ''' AWS::EC2::NetworkAcl Reference: http://goo.gl/9hYaGN '''
+        ''' AWS::EC2::SecurityGroup Reference: http://goo.gl/Q1p2lr '''
+
+        if 'rules' not in data:
+            logger.error('ACL rules for ' + oid + ' are missing, exiting ...')
+            sys.exit(1)
+        if 'inbound' not in data['rules']:
+            logger.error('ACL inbound rules for ' + oid + ' are missing, exiting ...')
+            sys.exit(1)
+        if 'outbound' not in data['rules']:
+            logger.error('ACL outbound rules for ' + oid + ' are missing, exiting ...')
+            sys.exit(1)
+
+        for direction in ['inbound', 'outbound']:
+            for rule in data['rules'][direction]:
+                entry = {'Type': 'AWS::EC2::SecurityGroup',
+                         'Properties': {'RuleNumber': str(rule)}}
+
+
+        #        entry['Properties']['Egress'] = "false"
+        #        if direction == 'outbound':
+        #             entry['Properties']['Egress'] = "true"
+        #        rule_rgx = '(allow|deny)\s+(tcp|udp|icmp|ip|all)\s+(\d+\-\d+|\d+|any)\s+from\s+'
+        #        rule_rgx += '(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2})'
+        #        match_rule = re.match(rule_rgx, data['rules'][direction][rule])
+        #        match_any = re.match('(allow|deny)\s+any', data['rules'][direction][rule])
+        #        if match_rule:
+        #            pass
+        #        elif match_any:
+        #            if match_any.group(1) == 'allow':
+        #                entry['Properties']['RuleAction'] = 'allow'
+        #            else:
+        #                entry['Properties']['RuleAction'] = 'deny'
+        #            entry['Properties']['CidrBlock'] = '0.0.0.0/0'
+        #            entry['Properties']['Icmp'] = {'Code': '-1', 'Type': '-1'}
+        #            entry['Properties']['Protocol'] = '-1'
+        #            entry['Properties']['PortRange'] = { "From" : "0", "To" : "65535" }
+        #        else:
+        #            logger.error(direction + ' ACL rule # ' + str(rule) + ' for ' + oid + \
+        #                         ' is invalid, exiting ...')
+        #            sys.exit(1)
+        #        #acls[oid]['Entries'].append(entry)
+        return oid
+
+
+
+        res[oid] = {}
+        res[oid]['Type'] = 'AWS::EC2::' + data['aws-type']
+        res[oid]['Properties'] = {}
+        res[oid]['Entries'] = []
+        res[oid]['Properties']['VpcId'] = {'Ref': None}
+
+        #res[oid] = {}
+        #res[oid]['Type'] = 'AWS::EC2::' + data['aws-type']
+        #res[oid]['Properties'] = {}
+        #res[oid]['Entries'] = []
+        #res[oid]['Properties']['VpcId'] = {'Ref': None}
+        #if 'Tags' not in acls[oid]['Properties']:
+        #    acls[oid]['Properties']['Tags'] = []
+        #acls[oid]['Properties']['Tags'].append({'Key': 'Application',
+        #                                        'Value': {'Ref': 'AWS::StackName'}})
+        #if 'description' in data:
+        #    acls[oid]['Properties']['Tags'].append({'Key': 'Description',
+        #                                             'Value': data['description']})
+        #if 'name' in data:
+        #    acls[oid]['Properties']['Tags'].append({'Key': 'Name', 'Value': data['name']})
+        #
+        #''' AWS::EC2::NetworkAclEntry Reference: http://goo.gl/u0H6TC '''
+        #for direction in ['inbound', 'outbound']:
+        #    for rule in data['rules'][direction]:
+        #        entry = {'Type': 'AWS::EC2::NetworkAclEntry',
+        #                 'Properties': {'RuleNumber': str(rule)}}
+        #        entry['Properties']['Egress'] = "false"
+        #        if direction == 'outbound':
+        #             entry['Properties']['Egress'] = "true"
+        #        rule_rgx = '(allow|deny)\s+(tcp|udp|icmp|ip|all)\s+(\d+\-\d+|\d+|any)\s+from\s+'
+        #        rule_rgx += '(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2})'
+        #        match_rule = re.match(rule_rgx, data['rules'][direction][rule])
+        #        match_any = re.match('(allow|deny)\s+any', data['rules'][direction][rule])
+        #        if match_rule:
+        #            pass
+        #        elif match_any:
+        #            if match_any.group(1) == 'allow':
+        #                entry['Properties']['RuleAction'] = 'allow'
+        #            else:
+        #                entry['Properties']['RuleAction'] = 'deny'
+        #            entry['Properties']['CidrBlock'] = '0.0.0.0/0'
+        #            entry['Properties']['Icmp'] = {'Code': '-1', 'Type': '-1'}
+        #            entry['Properties']['Protocol'] = '-1'
+        #            entry['Properties']['PortRange'] = { "From" : "0", "To" : "65535" }
+        #        else:
+        #            logger.error(direction + ' ACL rule # ' + str(rule) + ' for ' + oid + \
+        #                         ' is invalid, exiting ...')
+        #            sys.exit(1)
+        #        #acls[oid]['Entries'].append(entry)
+        return oid
     else:
         pass
 
     if not res:
-        logger.error('failed to create AWS resource for ' + oid)
+        logger.info('failed to create AWS resource for ' + oid)
         return
 
     if 'Tags' not in res['Properties']:
@@ -395,8 +642,8 @@ def _add_resource(oid, data):
 def main():
     """ Main function """
     global db
-    descr = str(__file__) + ' - AWS Cloud Formation Template Maker\n\n'
-    epil = '\ngithub: https://github.com/greenpau/aws-cf-tmaker\n\n'
+    descr = str(__file__) + ' - AWS Cloud Formation Tool\n\n'
+    epil = '\ngithub: https://github.com/greenpau/CloudAutomation\n\n'
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, \
                                      description=descr, epilog=epil)
     main_group = parser.add_argument_group('arguments')
@@ -424,12 +671,33 @@ def main():
         sys.exit(1)
 
     tmpl['AWSTemplateFormatVersion'] = '2010-09-09'
-    tmpl['Description'] = 'This template creates a VPC'
+    tmpl['Description'] = 'This template was created by @greenpau'
 
+    resources = []
     pending = list(db.keys())
+    priorities = {1: [], 5: [], 10: [], 15: [], 20: []}
+    for entry in list(db.keys()):
+        if 'aws-type' not in db[entry]:
+            logger.error('AWS type is missing for resource ' + entry + ', exiting ...')
+            sys.exit(1)
+        elif db[entry]['aws-type'] in ['VPC', 'SecurityGroup', 'NetworkAcl']:
+            priorities[1].append(entry)
+        elif db[entry]['aws-type'] == 'Subnet':
+            priorities[5].append(entry)
+        elif db[entry]['aws-type'] == 'InternetGateway':
+            priorities[10].append(entry)
+        elif db[entry]['aws-type'] == 'CustomerGateway':
+            priorities[20].append(entry)
+        else:
+            priorities[15].append(entry)
+    for priority in sorted(priorities):
+        for entry in priorities[priority]:
+            resources.append(entry)
+
+    pending = list(resources)
     pending_cycle = 0
     while pending:
-        for res in sorted(db):
+        for res in resources:
             if res not in pending:
                 continue
             if _add_resource(res, db[res]) is not None:
@@ -447,4 +715,16 @@ def main():
         pprint.pprint(json.dumps(tmpl, sort_keys=True, indent=4, separators=(',', ': ')))
 
 if __name__ == '__main__':
+    if sys.version_info[0] < 3:
+        sys.stderr.write(os.path.basename(__file__) + ' requires Python 3.3 or higher, try:\n\n')
+        sys.stderr.write("    python3 " + __file__ + ' -h\n\n')
+        sys.exit(1)
+    elif sys.version_info[0] < 3 and sys.version_info[1] < 3:
+        sys.stderr.write(os.path.basename(__file__) + ' requires Python 3.3 or higher, try:\n\n')
+        sys.stderr.write("    python3 " + __file__ + ' -h\n\n')
+        sys.exit(1)
+    else:
+        import argparse
+        import ipaddress
+        import yaml
     main()
