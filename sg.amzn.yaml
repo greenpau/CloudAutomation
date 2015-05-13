@@ -1,0 +1,26 @@
+---
+#
+# This file contains Resource definitions for AWS Cloud Formation Service
+# 
+
+DefaultGroup0:
+  name:        SGACL0
+  aws-type:    SecurityGroup
+  rules:
+    inbound:
+      10:  allow ip any from 0.0.0.0/0
+    outbound:
+      10:  deny ip any to 100.10.10.10/32
+      20:  allow any
+  description: Default Security Group for VPC0
+
+DefaultGroup1:
+  name:        SGACL1
+  aws-type:    SecurityGroup
+  rules:
+    inbound:
+      10:  allow ip any from 0.0.0.0/0
+    outbound:
+      10:  deny ip any to 100.10.10.11/32
+      20:  allow any
+  description: Default Security Group for VPC1
