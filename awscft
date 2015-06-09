@@ -476,17 +476,21 @@ def _add_resource(oid, data):
 
     elif data['aws-type'] == 'InternetGateway':
 
+        vpc_id = None;
+        rt_id = None;
+
         if 'vpc' not in data:
             logger.error('template parameter vpc for ' + oid + ' is missing, exiting ...')
+            return None
         if 'vrf' not in data:
-            logger.error('template parameter vrf for ' + oid + ' is missing, exiting ...')
+            logger.info('template parameter vrf for ' + oid + ' is missing, using default routing table ...')
 
         vpc_id = _find_vpc_id(data['vpc'])
         if vpc_id is None:
             return None
-        rt_id = _find_rt_id(data['vrf'], vpc_id)
-        if rt_id is None:
-            return None
+
+        if 'vrf' in data:
+            rt_id = _find_rt_id(data['vrf'], vpc_id)
 
         ''' AWS::EC2::InternetGateway Reference: http://goo.gl/2Jcc8b '''
         res['Type'] = 'AWS::EC2::InternetGateway'
@@ -518,8 +522,9 @@ def _add_resource(oid, data):
                 vars()[irt] = {}
                 vars()[irt]['Type'] = 'AWS::EC2::Route'
                 vars()[irt]['Properties'] = {}
-                vars()[irt]['DependsOn'] = [oid, rt_id]
-                vars()[irt]['Properties']['RouteTableId'] = {'Ref': rt_id}
+                if rt_id is not None:
+                    vars()[irt]['DependsOn'] = [oid, rt_id]
+                    vars()[irt]['Properties']['RouteTableId'] = {'Ref': rt_id}
                 vars()[irt]['Properties']['DestinationCidrBlock'] = data['routes'][i]
                 vars()[irt]['Properties']['GatewayId'] = {'Ref': oid}
                 tmpl['Resources'][irt] = vars()[irt]
