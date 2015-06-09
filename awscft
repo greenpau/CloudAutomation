@@ -87,7 +87,7 @@ def _find_depends_on():
     for res in tmpl['Resources']:
         if tmpl['Resources'][res]['Type'] not in vpn_ids:
             oids.append(res)
-    return oids
+    return sorted(oids)
 
 def _find_rt_id(vrf, vpc):
     ''' Find VRF id by matching provided VRF name to VPC resources in a stack '''
